@@ -239,9 +239,19 @@ export default function App() {
   };
 
   // Handler: Open Booking Flow with Diagnosis
-  const handleOpenBooking = (diagnosis: DiagnosticReport) => {
+  const handleBookDiagnosis = (diagnosis: DiagnosticReport) => {
     setTargetDiagnosis(diagnosis);
     setIsBookingModalOpen(true);
+  };
+
+  const handleStartBooking = () => {
+    const diagnosis = currentSession?.latestDiagnosis;
+    if (!diagnosis) {
+      setError('Complete a backend diagnosis before booking a mechanic.');
+      document.getElementById('diagnose')?.scrollIntoView({ behavior: 'smooth' });
+      return;
+    }
+    handleBookDiagnosis(diagnosis);
   };
 
   // Handler: Booking Confirmed Success
@@ -307,30 +317,7 @@ export default function App() {
   }
 
   const activeVehicle: VehicleProfile = currentSession?.vehicle || DEFAULT_VEHICLE;
-  const activeDiagnosis: DiagnosticReport =
-    targetDiagnosis ||
-    currentSession?.latestDiagnosis || {
-      id: 'DIAG-REF-PRE',
-      problemSummary: 'Automotive Diagnostic Assessment',
-      possibleCauses: [],
-      mostLikelyIssue: 'Vehicle Diagnostic Inspection',
-      recommendedRepair: 'Multi-Point Inspection',
-      urgency: 'Medium',
-      urgencyReason: 'Requires shop verification',
-      canDriveSafely: true,
-      drivingAdvice: 'Drive with caution',
-      estimatedCost: {
-        min: 150,
-        max: 350,
-        currency: 'INR',
-        partsEstimate: 80,
-        laborEstimate: 120,
-      },
-      confidenceScore: 85,
-      requiresPhysicalInspection: true,
-      disclaimer: 'Inspection required by certified technician.',
-      createdAt: new Date().toISOString(),
-    };
+  const activeDiagnosis: DiagnosticReport | null = targetDiagnosis || currentSession?.latestDiagnosis || null;
 
   const scrollToChat = () => document.getElementById('diagnose')?.scrollIntoView({ behavior: 'smooth' });
   const stepItems: Array<[string, typeof MessageCircle, string, string]> = [
@@ -361,7 +348,7 @@ export default function App() {
             </p>
             <div className="hero-actions">
               <button className="button button-primary" onClick={scrollToChat}>Start Diagnosis <ArrowRight size={17} /></button>
-              <button className="button button-secondary" onClick={() => setIsBookingModalOpen(true)}>Book a Mechanic</button>
+              <button className="button button-secondary" onClick={handleStartBooking}>Book a Mechanic</button>
             </div>
             <div className="hero-note"><span className="status-dot" /> Ready to help with your next drive</div>
           </div>
@@ -405,7 +392,7 @@ export default function App() {
                 vehicle={activeVehicle}
                 isLoading={isLoading}
                 onSendMessage={handleSendMessage}
-                onBookMechanic={handleOpenBooking}
+                onBookMechanic={handleBookDiagnosis}
                 onOpenMediaModal={() => setIsMediaModalOpen(true)}
                 onOpenVehicleModal={() => setIsVehicleModalOpen(true)}
                 onRetryMessage={handleRetryMessage}
@@ -440,7 +427,7 @@ export default function App() {
           <div className="about-copy"><p className="eyebrow"><span /> Why it exists</p><h2>Technology that helps you understand your car before you visit a mechanic.</h2><p>AI Car Mechanic gives drivers a calmer first step when something feels wrong. The product keeps the conversation practical: listen carefully, ask better questions, explain the likely issue, and create a direct path to service when you need one.</p><div className="benefit-list"><div><strong>Clearer diagnosis</strong><span>Know what the possible issue may be.</span></div><div><strong>Guided questions</strong><span>Get relevant follow-up questions instead of guessing.</span></div><div><strong>Mechanic booking</strong><span>Move from diagnosis to service when needed.</span></div></div></div>
         </section>
 
-        <section className="final-cta" id="book"><div><p className="eyebrow"><span /> Ready when you are</p><h2>Know the problem.<br /><em>Get it fixed.</em></h2><p>Once you’ve understood the likely issue, book a mechanic for the next step.</p></div><button className="button button-primary" onClick={() => setIsBookingModalOpen(true)}>Book a Mechanic <ArrowRight size={17} /></button></section>
+        <section className="final-cta" id="book"><div><p className="eyebrow"><span /> Ready when you are</p><h2>Know the problem.<br /><em>Get it fixed.</em></h2><p>Once you’ve understood the likely issue, book a mechanic for the next step.</p></div><button className="button button-primary" onClick={handleStartBooking}>Book a Mechanic <ArrowRight size={17} /></button></section>
       </main>
 
       <footer className="site-footer"><div><strong>AI Car Mechanic</strong><p>Smart vehicle diagnosis with a direct path to mechanic service.</p></div><nav><a href="#home">Home</a><a href="#diagnose">Diagnose</a><a href="#how-it-works">How It Works</a><a href="#services">Services</a><a href="#book">Book Mechanic</a></nav><span>© 2026 AI Car Mechanic</span></footer>
@@ -466,9 +453,9 @@ export default function App() {
 
       {/* Booking & Work Order Confirmation Modal */}
       <BookingModal
-        isOpen={isBookingModalOpen}
+        isOpen={isBookingModalOpen && !!activeDiagnosis}
         onClose={() => setIsBookingModalOpen(false)}
-        diagnosis={activeDiagnosis}
+        diagnosis={activeDiagnosis as DiagnosticReport}
         vehicle={activeVehicle}
         conversationId={currentSession?.id}
         onBookingSuccess={handleBookingSuccess}

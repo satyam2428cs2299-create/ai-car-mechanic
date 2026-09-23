@@ -123,8 +123,10 @@ const toDiagnosticReport = (data: DiagnosisResponse): DiagnosticReport => {
     recommendedRepair: data.recommended_service,
     urgency,
     urgencyReason: 'Based on the backend diagnostic assessment.',
-    canDriveSafely: urgency !== 'Critical',
-    drivingAdvice: urgency === 'High' ? 'Limit driving until the vehicle is inspected.' : 'Drive with caution until inspected.',
+    canDriveSafely: urgency !== 'High',
+    drivingAdvice: urgency === 'High'
+      ? 'Do not drive the vehicle. Arrange towing or immediate professional inspection.'
+      : 'Drive with caution until inspected.',
     estimatedCost: { min: 0, max: 0, currency: 'INR', partsEstimate: 0, laborEstimate: 0 },
     confidenceScore: 0,
     requiresPhysicalInspection: true,
@@ -212,14 +214,17 @@ class MechanicApiClient {
     if (!session) throw new Error('Session not found');
 
     const conversationId = backendConversationId(sessionId);
-    const response = await request<ChatResponse>('/api/chat/', {
-      method: 'POST',
-      body: JSON.stringify({ ...(conversationId ? { conversation_id: conversationId } : {}), message: content || 'Please inspect the attached vehicle media.' }),
+    const files = attachments.filter((attachment) => attachment.file);
+    const body = files.length > 0 ? new FormData() : JSON.stringify({
+      ...(conversationId ? { conversation_id: conversationId } : {}),
+      message: content || 'Please inspect the attached vehicle media.',
     });
-
-    for (const attachment of attachments) {
-      if (attachment.file) await this.uploadMedia(response.conversation_id, attachment.file);
+    if (body instanceof FormData) {
+      if (conversationId) body.append('conversation_id', String(conversationId));
+      body.append('message', content || 'Please inspect the attached vehicle media.');
+      files.forEach((attachment) => body.append('files', attachment.file as File));
     }
+    const response = await request<ChatResponse>('/api/chat/', { method: 'POST', body });
 
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,

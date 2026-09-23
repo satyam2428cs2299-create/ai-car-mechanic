@@ -77,6 +77,10 @@ class BookingSerializer(serializers.ModelSerializer):
         for field_name in required_fields:
             if not attrs.get(field_name):
                 raise serializers.ValidationError({field_name: "This field is required."})
+        if not Diagnosis.objects.filter(conversation_id=attrs["conversation_id"]).exists():
+            raise serializers.ValidationError({
+                "conversation_id": "A completed diagnosis is required before booking.",
+            })
         return attrs
 
 

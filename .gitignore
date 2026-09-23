@@ -2,7 +2,13 @@ node_modules/
 build/
 dist/
 coverage/
+__pycache__/
+*.pyc
+db.sqlite3
+venv/
+.venv/
 .DS_Store
 *.log
+.env
 .env*
 !.env.example

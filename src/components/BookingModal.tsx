@@ -90,9 +90,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
         customerEmail,
         serviceType,
         serviceLocation:
-          serviceType === 'service_center'
-            ? 'Metro ASE Certified Auto Center - Bay #4'
-            : serviceAddress,
+          serviceAddress,
         preferredDate,
         preferredTime,
         vehicle,

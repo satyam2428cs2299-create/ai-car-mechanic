@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 import os
 from pathlib import Path
+from django.core.management.utils import get_random_secret_key
 
 
 def load_local_env(env_path):
@@ -27,6 +28,13 @@ def load_local_env(env_path):
 
 load_local_env(Path(__file__).resolve().parent.parent / '.env')
 
+
+def env_bool(name, default=False):
+    return os.getenv(name, str(default)).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+DEPLOYMENT_ENV = os.getenv('DJANGO_ENV', 'development').strip().lower()
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -34,18 +42,21 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-s6ms_m0f16hfe!1wzfl)^e)@as-x$wr-#9mkum)0*$m$!+sm1a'
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', '').strip()
+if not SECRET_KEY:
+    if DEPLOYMENT_ENV == 'production':
+        raise RuntimeError('DJANGO_SECRET_KEY must be configured in production.')
+    SECRET_KEY = get_random_secret_key()
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env_bool('DJANGO_DEBUG', DEPLOYMENT_ENV != 'production')
 
+configured_hosts = os.getenv('DJANGO_ALLOWED_HOSTS', '').strip()
+if DEPLOYMENT_ENV == 'production' and not configured_hosts:
+    raise RuntimeError('DJANGO_ALLOWED_HOSTS must be configured in production.')
 ALLOWED_HOSTS = [
-    'localhost',
-    '127.0.0.1',
-    '0.0.0.0',
-    'testserver',
-    '[::1]',
+    host.strip()
+    for host in (configured_hosts or 'localhost,127.0.0.1,0.0.0.0,testserver,[::1]').split(',')
+    if host.strip()
 ]
 
 
@@ -156,3 +167,13 @@ CORS_ALLOWED_ORIGINS = [
     ).split(',')
     if origin.strip()
 ]
+
+SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', DEPLOYMENT_ENV == 'production')
+SECURE_HSTS_SECONDS = int(os.getenv('SECURE_HSTS_SECONDS', '31536000' if DEPLOYMENT_ENV == 'production' else '0'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool(
+    'SECURE_HSTS_INCLUDE_SUBDOMAINS',
+    DEPLOYMENT_ENV == 'production',
+)
+SECURE_HSTS_PRELOAD = env_bool('SECURE_HSTS_PRELOAD', DEPLOYMENT_ENV == 'production')
+SESSION_COOKIE_SECURE = env_bool('SESSION_COOKIE_SECURE', DEPLOYMENT_ENV == 'production')
+CSRF_COOKIE_SECURE = env_bool('CSRF_COOKIE_SECURE', DEPLOYMENT_ENV == 'production')

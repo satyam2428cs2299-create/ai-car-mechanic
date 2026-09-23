@@ -15,6 +15,15 @@ from .serializers import (
 from .services.gemini import generate_chat_reply, generate_diagnosis
 
 
+def _media_type_for_file(uploaded_file):
+    content_type = uploaded_file.content_type or ""
+    if content_type.startswith("audio/"):
+        return Media.MEDIA_AUDIO
+    if content_type.startswith("video/"):
+        return Media.MEDIA_VIDEO
+    return Media.MEDIA_IMAGE
+
+
 class ChatView(APIView):
     def post(self, request, *args, **kwargs):
         serializer = ChatRequestSerializer(data=request.data)
@@ -40,6 +49,14 @@ class ChatView(APIView):
             role=Message.ROLE_USER,
             content=user_message,
         )
+
+        for uploaded_file in request.FILES.getlist("files"):
+            Media.objects.create(
+                conversation=conversation,
+                message=user_msg,
+                file=uploaded_file,
+                media_type=_media_type_for_file(uploaded_file),
+            )
 
         assistant_reply = generate_chat_reply(
             conversation.messages.all(),

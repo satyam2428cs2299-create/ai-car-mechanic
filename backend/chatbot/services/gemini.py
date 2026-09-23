@@ -83,6 +83,24 @@ def _history_text(messages: Iterable[Message]) -> str:
     return "\n".join(f"{message.role}: {message.content}" for message in recent if message.content)
 
 
+def _image_parts(media: Iterable[Media]) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    for item in media:
+        if item.media_type != Media.MEDIA_IMAGE or item.file.size > MAX_IMAGE_BYTES:
+            continue
+        item.file.open("rb")
+        try:
+            parts.append({
+                "inline_data": {
+                    "mime_type": getattr(item.file.file, "content_type", None) or "image/jpeg",
+                    "data": base64.b64encode(item.file.read()).decode("ascii"),
+                }
+            })
+        finally:
+            item.file.close()
+    return parts
+
+
 def _generate_content_rest(parts: list[dict[str, Any]], response_mime_type: str | None = None) -> str:
     key = _api_key()
     if not key:
@@ -163,6 +181,15 @@ def _generate_content(parts: list[dict[str, Any]], response_mime_type: str | Non
 
 def generate_chat_reply(messages: Iterable[Message], current_text: str, media: Iterable[Media] = ()) -> str:
     history = list(messages)
+    media_list = list(media)
+    unsupported_media = [item for item in media_list if item.media_type in {Media.MEDIA_AUDIO, Media.MEDIA_VIDEO}]
+    image_media = [item for item in media_list if item.media_type == Media.MEDIA_IMAGE]
+    unsupported_response = (
+        "I can store audio and video files, but I cannot analyze those media types yet. "
+        "Please upload an image or describe the sound/video in text."
+    )
+    if unsupported_media and not image_media:
+        return unsupported_response
     deterministic = deterministic_reply(current_text)
     if _is_non_automotive_query(current_text) or re.fullmatch(
         r"(?:hi|hello|hey|howdy|good morning|good afternoon|good evening)[!. ]*",
@@ -172,7 +199,13 @@ def generate_chat_reply(messages: Iterable[Message], current_text: str, media: I
     if deterministic is not None:
         return deterministic
 
-    media_names = ", ".join(item.file.name for item in media if item.file.name) or "none"
+    media_names = ", ".join(item.file.name for item in media_list if item.file.name) or "none"
+    unsupported_note = ""
+    if unsupported_media:
+        unsupported_note = (
+            " Audio and video files are stored but cannot currently be analyzed. "
+            "Ask the customer to upload an image or describe the sound/video in text."
+        )
     prompt = f"""You are a senior automobile technician helping a real customer in Delhi NCR.
 You are the primary reasoning engine, not a fixed questionnaire. Determine the customer's actual automotive problem from the latest message and conversation history; never assume a category from an older turn. Match the customer's language naturally, including Hindi/Hinglish. Acknowledge the actual symptom, ask only one or two useful next questions, and do not repeat answered questions. If the situation is safety-critical (brake failure, detached wheel, steering failure, fuel leak, smoke/fire, severe overheating, dangerous tyre damage, or major accident), prioritize stopping safely, not driving, towing, and professional inspection. Ask for a photo only when visual evidence would help. If an image is supplied, describe only what is visibly identifiable and distinguish observations, possibilities, and uncertainty. When enough evidence exists, give a concise assessment, possible causes, the most likely explanation with uncertainty, next steps, and whether a mechanic is recommended. Do not invent vehicle specifications, prices, availability, bookings, or human identity. Do not answer unrelated questions except to explain the automotive scope. Keep the response under 180 words and use plain text.
 
@@ -182,10 +215,12 @@ Recent conversation:
 Current user message:
 {current_text}
 
-Uploaded media filenames (not necessarily analyzed): {media_names}
+Uploaded media filenames: {media_names}
+{unsupported_note}
 """
     try:
-        return _generate_content([{"text": prompt}])
+        response = _generate_content([{"text": prompt}, *_image_parts(media_list)])
+        return f"{unsupported_response}\n\n{response}" if unsupported_media else response
     except Exception:
         logger.exception("Gemini chat generation failed")
         return _fallback_chat_reply(current_text)
@@ -194,7 +229,14 @@ Uploaded media filenames (not necessarily analyzed): {media_names}
 def _fallback_diagnosis(messages: Iterable[Message]) -> dict[str, str]:
     text = " ".join(message.content for message in messages if message.content)
     normalized = text.lower()
-    urgency = "high" if any(term in normalized for term in ("flashing", "red", "overheat", "steam", "grinding")) else "medium"
+    high_risk_terms = (
+        "brake failure", "brakes failed", "brake not working", "steering failure",
+        "steering failed", "detached wheel", "wheel came off", "tyre came off",
+        "tire came off", "fuel leak", "petrol leak", "diesel leak", "smoke",
+        "fire", "severe overheating", "overheating", "steam", "dangerous tyre",
+        "dangerous tire", "flashing", "red", "grinding",
+    )
+    urgency = "high" if any(term in normalized for term in high_risk_terms) else "medium"
     likely_issue = "Possible brake, electrical, cooling, or mechanical fault"
     if "brake" in normalized or "squeal" in normalized:
         likely_issue = "Possible brake friction or rotor issue"
@@ -233,20 +275,7 @@ Conversation:
 """
     contents: list[dict[str, Any]] = [{"text": prompt}]
     try:
-        for media in image_media:
-            if media.file.size > MAX_IMAGE_BYTES:
-                logger.info("Skipping oversized image during diagnosis: %s", media.file.name)
-                continue
-            media.file.open("rb")
-            try:
-                contents.append({
-                    "inline_data": {
-                        "mime_type": getattr(media.file.file, "content_type", None) or "image/jpeg",
-                        "data": base64.b64encode(media.file.read()).decode("ascii"),
-                    }
-                })
-            finally:
-                media.file.close()
+        contents.extend(_image_parts(image_media))
         return _parse_diagnosis(_generate_content(contents, "application/json"))
     except Exception:
         logger.exception("Gemini diagnosis generation failed")

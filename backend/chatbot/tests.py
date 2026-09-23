@@ -1,3 +1,4 @@
+import base64
 import json
 from unittest.mock import patch
 
@@ -5,7 +6,8 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from .models import Conversation, Message
+from .models import Conversation, Diagnosis, Media, Message
+from .services.gemini import _fallback_diagnosis
 
 
 class ChatbotApiTests(TestCase):
@@ -43,6 +45,26 @@ class ChatbotApiTests(TestCase):
         prompt = generate.call_args.args[0][0]['text']
         self.assertIn('gadi k ek tyre hi nikal gaya', prompt)
         self.assertIn('primary reasoning engine', prompt)
+
+    def test_car_wont_start_reaches_gemini(self):
+        with patch(
+            'chatbot.services.gemini._generate_content',
+            return_value='Check the battery and starter circuit before further diagnosis.',
+        ) as generate:
+            response = self.client.post(
+                '/api/chat/', {'message': "My car won't start."}, format='json'
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("My car won't start.", generate.call_args.args[0][0]['text'])
+
+    def test_high_risk_fallback_is_not_driveable(self):
+        for symptom in (
+            'brake failure', 'steering failure', 'detached wheel', 'fuel leak',
+            'smoke and fire', 'severe overheating', 'dangerous tyre damage',
+        ):
+            with self.subTest(symptom=symptom):
+                result = _fallback_diagnosis([Message(content=symptom)])
+                self.assertEqual(result['urgency'], 'high')
 
     def test_follow_up_history_reaches_gemini_without_category_router(self):
         conversation = Conversation.objects.create()
@@ -137,9 +159,54 @@ class ChatbotApiTests(TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(generate.call_args.args[0]), 2)
+        image_part = generate.call_args.args[0][1]['inline_data']
+        self.assertEqual(base64.b64decode(image_part['data']), b'image-bytes')
+
+    def test_chat_uploads_image_before_gemini_and_sends_bytes(self):
+        with patch(
+            'chatbot.services.gemini._generate_content',
+            return_value='The image is available for visual inspection.',
+        ) as generate:
+            response = self.client.post(
+                '/api/chat/',
+                {
+                    'message': 'Please inspect this dashboard warning image.',
+                    'files': SimpleUploadedFile(
+                        'dashboard.jpg', b'chat-image-bytes', content_type='image/jpeg'
+                    ),
+                },
+                format='multipart',
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Media.objects.count(), 1)
+        image_part = generate.call_args.args[0][1]['inline_data']
+        self.assertEqual(base64.b64decode(image_part['data']), b'chat-image-bytes')
+
+    def test_audio_is_not_presented_as_analyzed(self):
+        with patch('chatbot.services.gemini._generate_content') as generate:
+            response = self.client.post(
+                '/api/chat/',
+                {
+                    'message': 'Please inspect this engine sound.',
+                    'files': SimpleUploadedFile(
+                        'engine.webm', b'audio-bytes', content_type='audio/webm'
+                    ),
+                },
+                format='multipart',
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('cannot analyze those media types yet', response.data['assistant_response'])
+        generate.assert_not_called()
 
     def test_booking_api_remains_available(self):
         conversation = Conversation.objects.create()
+        Diagnosis.objects.create(
+            conversation=conversation,
+            problem_summary='Wheel inspection required.',
+            most_likely_issue='Detached wheel',
+            recommended_service='Tow for inspection.',
+            urgency='high',
+        )
         response = self.client.post(
             '/api/booking/',
             {
