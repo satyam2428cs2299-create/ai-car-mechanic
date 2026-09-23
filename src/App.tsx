@@ -452,15 +452,17 @@ export default function App() {
       />
 
       {/* Booking & Work Order Confirmation Modal */}
-      <BookingModal
-        isOpen={isBookingModalOpen && !!activeDiagnosis}
-        onClose={() => setIsBookingModalOpen(false)}
-        diagnosis={activeDiagnosis as DiagnosticReport}
-        vehicle={activeVehicle}
-        conversationId={currentSession?.id}
-        onBookingSuccess={handleBookingSuccess}
-        existingBooking={currentSession?.booking}
-      />
+      {activeDiagnosis && (
+        <BookingModal
+          isOpen={isBookingModalOpen}
+          onClose={() => setIsBookingModalOpen(false)}
+          diagnosis={activeDiagnosis}
+          vehicle={activeVehicle}
+          conversationId={currentSession?.id}
+          onBookingSuccess={handleBookingSuccess}
+          existingBooking={currentSession?.booking}
+        />
+      )}
 
       {/* API Simulator & Django REST Architecture Modal */}
       <ApiSimulatorModal
