@@ -11,7 +11,7 @@ import {
 const STORAGE_KEY_SESSION = 'ai_mechanic_backend_session_v1';
 
 export const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
+  import.meta.env.DEV ? import.meta.env.VITE_API_BASE_URL || '' : ''
 ).replace(/\/$/, '');
 
 export const DEFAULT_VEHICLE: VehicleProfile = {
