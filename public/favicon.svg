@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title>AI Car Mechanic</title>
+  <rect width="64" height="64" rx="12" fill="#c91825"/>
+  <path d="M14 36h36l-4-12H18l-4 12Zm5 0v8m26-8v8M16 36h32" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="4"/>
+  <circle cx="22" cy="44" r="3" fill="#fff"/>
+  <circle cx="42" cy="44" r="3" fill="#fff"/>
+</svg>
