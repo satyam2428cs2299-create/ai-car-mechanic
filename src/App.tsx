@@ -423,7 +423,7 @@ export default function App() {
         </section>
 
         <section className="about-section" id="about">
-          <div className="about-image"><img src="https://images.unsplash.com/photo-1486006920555-c77dce18193b?auto=format&fit=crop&w=1000&q=85" alt="Automotive engine components" /></div>
+          <div className="about-image"><img src="/engine-components.svg" alt="Automotive engine components" /></div>
           <div className="about-copy"><p className="eyebrow"><span /> Why it exists</p><h2>Technology that helps you understand your car before you visit a mechanic.</h2><p>AI Car Mechanic gives drivers a calmer first step when something feels wrong. The product keeps the conversation practical: listen carefully, ask better questions, explain the likely issue, and create a direct path to service when you need one.</p><div className="benefit-list"><div><strong>Clearer diagnosis</strong><span>Know what the possible issue may be.</span></div><div><strong>Guided questions</strong><span>Get relevant follow-up questions instead of guessing.</span></div><div><strong>Mechanic booking</strong><span>Move from diagnosis to service when needed.</span></div></div></div>
         </section>
 

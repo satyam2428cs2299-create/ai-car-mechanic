@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" role="img" aria-labelledby="title desc">
+  <title id="title">Automotive engine components</title>
+  <desc id="desc">A stylized close-up illustration of automotive engine components.</desc>
+  <rect width="1200" height="800" fill="#242629"/>
+  <path d="M0 610 210 420l160 38 120-188 170 74 136-156 196 112 208-42v542H0Z" fill="#303337"/>
+  <path d="m125 560 166-138 148 52 91-143 173 72 127-144 181 103 156-30" fill="none" stroke="#c91825" stroke-linecap="round" stroke-linejoin="round" stroke-width="22"/>
+  <g fill="#b8bab8" stroke="#737678" stroke-width="8">
+    <rect x="210" y="285" width="235" height="170" rx="20" transform="rotate(-12 210 285)"/>
+    <rect x="510" y="350" width="230" height="170" rx="20" transform="rotate(10 510 350)"/>
+    <rect x="815" y="230" width="220" height="170" rx="20" transform="rotate(-8 815 230)"/>
+  </g>
+  <g fill="#242629">
+    <circle cx="315" cy="365" r="35"/>
+    <circle cx="630" cy="435" r="35"/>
+    <circle cx="920" cy="310" r="35"/>
+  </g>
+  <g fill="#e8e8e3">
+    <circle cx="315" cy="365" r="10"/>
+    <circle cx="630" cy="435" r="10"/>
+    <circle cx="920" cy="310" r="10"/>
+  </g>
+  <path d="M96 696h1008" stroke="#c91825" stroke-width="6"/>
+</svg>

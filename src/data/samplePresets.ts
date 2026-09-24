@@ -70,7 +70,7 @@ export const SAMPLE_PRESETS: DiagnosticPreset[] = [
         fileName: 'engine_bay_valve_cover.jpg',
         fileSize: 580000,
         mimeType: 'image/jpeg',
-        url: 'https://images.unsplash.com/photo-1486006920555-c77dce18193b?auto=format&fit=crop&w=800&q=80',
+        url: '/engine-components.svg',
         description: 'Engine bay photo highlighting valve train / cylinder head area',
       },
       {
