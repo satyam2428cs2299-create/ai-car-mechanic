@@ -174,8 +174,8 @@ def _generate_content(parts: list[dict[str, Any]], response_mime_type: str | Non
         if not text:
             raise RuntimeError("Gemini returned an empty response")
         return text.strip()
-    except ImportError:
-        logger.warning("Gemini SDK runtime unavailable; using official REST fallback")
+    except Exception as exc:
+        logger.warning("Gemini SDK request failed; using official REST fallback: %s", exc)
         return _generate_content_rest(parts, response_mime_type)
 
 
