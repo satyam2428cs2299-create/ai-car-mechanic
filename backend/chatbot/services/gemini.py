@@ -21,6 +21,8 @@ MAX_HISTORY_MESSAGES = 8
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_RETRIES = 3
 RETRY_BASE_DELAY_SECONDS = 0.5
+DAILY_LIMIT_ERROR = "DAILY_LIMIT_REACHED"
+DAILY_LIMIT_MESSAGE = "Daily AI limit reached. Please try again tomorrow."
 AUTOMOTIVE_TERMS = (
     "car", "truck", "vehicle", "engine", "brake", "brakes", "tire", "tyre",
     "wheel", "oil", "coolant", "radiator", "battery", "alternator", "starter",
@@ -33,6 +35,14 @@ AUTOMOTIVE_TERMS = (
     "crank nhi", "band ho", "kharab", "brake kaam", "awaz", "awaaz",
     "dhua", "dhuaan", "tel leak", "paani leak", "garam", "overheat ho",
 )
+
+
+class DailyLimitReachedError(RuntimeError):
+    code = DAILY_LIMIT_ERROR
+    message = DAILY_LIMIT_MESSAGE
+
+    def __init__(self):
+        super().__init__(self.message)
 NON_AUTOMOTIVE_TERMS = (
     "poem", "recipe", "brownie", "movie", "song", "lyrics", "weather", "bitcoin",
     "dating", "essay", "homework", "javascript", "python", "react", "programming",
@@ -152,7 +162,44 @@ def _status_code(exc: BaseException) -> int | None:
     return code if isinstance(code, int) else None
 
 
+def _provider_error_text(exc: BaseException) -> str:
+    values = [str(exc)]
+    for source in (exc, getattr(exc, "response", None)):
+        if source is None:
+            continue
+        body = getattr(source, "body", None)
+        if body:
+            values.append(str(body))
+        read = getattr(source, "read", None)
+        if callable(read):
+            try:
+                body = read()
+            except Exception:
+                body = None
+            if body:
+                values.append(body.decode("utf-8", "ignore") if isinstance(body, bytes) else str(body))
+    return " ".join(values).lower()
+
+
+def _is_daily_quota_exhausted(exc: BaseException) -> bool:
+    error_text = _provider_error_text(exc)
+    has_resource_exhausted = "resource_exhausted" in error_text or "resource exhausted" in error_text
+    quota_markers = (
+        "generaterequestsperdaypermodel-freetier",
+        "generate_content_free_tier_requests",
+        "daily quota",
+        "daily request",
+        "requests per day",
+        "project quota",
+        "model quota",
+        "quota exceeded",
+    )
+    return has_resource_exhausted and any(marker in error_text for marker in quota_markers)
+
+
 def _is_transient_error(exc: BaseException) -> bool:
+    if _is_daily_quota_exhausted(exc):
+        return False
     status_code = _status_code(exc)
     if status_code is not None:
         return status_code in {429, 500, 502, 503, 504}
@@ -173,6 +220,8 @@ def _with_retries(operation, provider: str) -> str:
         try:
             return operation()
         except Exception as exc:
+            if _is_daily_quota_exhausted(exc):
+                raise DailyLimitReachedError from None
             if not _is_transient_error(exc) or retry_number == MAX_RETRIES:
                 raise
             delay = RETRY_BASE_DELAY_SECONDS * (2 ** retry_number)
@@ -274,7 +323,11 @@ def _generate_content(parts: list[dict[str, Any]], response_mime_type: str | Non
             lambda: _generate_content_sdk(parts, response_mime_type),
             "SDK",
         )
+    except DailyLimitReachedError:
+        raise
     except Exception as exc:
+        if _is_daily_quota_exhausted(exc):
+            raise DailyLimitReachedError from None
         logger.warning("Gemini SDK request failed; using official REST fallback: %s", exc)
         return _generate_content_rest(parts, response_mime_type)
 
@@ -321,6 +374,8 @@ Uploaded media filenames: {media_names}
     try:
         response = _generate_content([{"text": prompt}, *_image_parts(media_list)])
         return f"{unsupported_response}\n\n{response}" if unsupported_media else response
+    except DailyLimitReachedError:
+        raise
     except Exception:
         logger.exception("Gemini chat generation failed")
         return _fallback_chat_reply(current_text, history)

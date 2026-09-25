@@ -68,14 +68,20 @@ interface BookingResponse {
 
 const formatError = async (response: Response): Promise<ApiError> => {
   let detail = `Request failed with HTTP ${response.status}.`;
+  let code = 'API_ERROR';
   try {
     const body = await response.json();
-    const firstError = Object.values(body).flat()[0];
-    detail = typeof firstError === 'string' ? firstError : body.detail || detail;
+    if (typeof body.error === 'string') code = body.error;
+    if (typeof body.message === 'string') detail = body.message;
+    else if (typeof body.detail === 'string') detail = body.detail;
+    else {
+      const firstError = Object.values(body).flat()[0];
+      detail = typeof firstError === 'string' ? firstError : detail;
+    }
   } catch {
     // Keep the HTTP status message when the response is not JSON.
   }
-  return { message: detail, status: response.status, code: 'API_ERROR' };
+  return { message: detail, status: response.status, code };
 };
 
 const request = async <T>(path: string, options: RequestInit = {}): Promise<T> => {

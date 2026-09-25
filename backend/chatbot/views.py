@@ -12,7 +12,7 @@ from .serializers import (
     DiagnosisRequestSerializer,
     MediaUploadSerializer,
 )
-from .services.gemini import generate_chat_reply, generate_diagnosis
+from .services.gemini import DailyLimitReachedError, generate_chat_reply, generate_diagnosis
 
 
 def _media_type_for_file(uploaded_file):
@@ -58,11 +58,17 @@ class ChatView(APIView):
                 media_type=_media_type_for_file(uploaded_file),
             )
 
-        assistant_reply = generate_chat_reply(
-            conversation.messages.all(),
-            user_message,
-            conversation.media_files.all(),
-        )
+        try:
+            assistant_reply = generate_chat_reply(
+                conversation.messages.all(),
+                user_message,
+                conversation.media_files.all(),
+            )
+        except DailyLimitReachedError as exc:
+            return Response(
+                {"error": exc.code, "message": exc.message},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
         assistant_msg = Message.objects.create(
             conversation=conversation,
             role=Message.ROLE_ASSISTANT,

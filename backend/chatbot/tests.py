@@ -9,7 +9,14 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from .models import Conversation, Diagnosis, Media, Message
-from .services.gemini import _fallback_diagnosis, _generate_content, _generate_content_rest
+from .services.gemini import (
+    DAILY_LIMIT_ERROR,
+    DAILY_LIMIT_MESSAGE,
+    DailyLimitReachedError,
+    _fallback_diagnosis,
+    _generate_content,
+    _generate_content_rest,
+)
 
 
 class ProviderError(Exception):
@@ -35,6 +42,26 @@ class GeminiRetryTests(TestCase):
         ) as sdk, patch('chatbot.services.gemini.time.sleep'):
             self.assertEqual(_generate_content(self.parts), 'SDK recovered')
         self.assertEqual(sdk.call_count, 2)
+
+    def test_transient_sdk_429_retries_then_succeeds(self):
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), patch(
+            'chatbot.services.gemini._generate_content_sdk',
+            side_effect=[ProviderError(429), 'SDK recovered'],
+        ) as sdk, patch('chatbot.services.gemini.time.sleep'):
+            self.assertEqual(_generate_content(self.parts), 'SDK recovered')
+        self.assertEqual(sdk.call_count, 2)
+
+    def test_daily_quota_raises_structured_error_without_rest_fallback(self):
+        quota_error = ProviderError(429)
+        quota_error.args = ('RESOURCE_EXHAUSTED: GenerateRequestsPerDayPerModel-FreeTier',)
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), patch(
+            'chatbot.services.gemini._generate_content_sdk', side_effect=quota_error
+        ), patch('chatbot.services.gemini._generate_content_rest') as rest:
+            with self.assertRaises(DailyLimitReachedError) as raised:
+                _generate_content(self.parts)
+        self.assertEqual(raised.exception.code, DAILY_LIMIT_ERROR)
+        self.assertEqual(raised.exception.message, DAILY_LIMIT_MESSAGE)
+        rest.assert_not_called()
 
     def test_sdk_failure_uses_rest_fallback(self):
         with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), patch(
@@ -173,6 +200,19 @@ class ChatbotApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('share your vehicle year', response.data['assistant_response'].lower())
         self.assertNotIn('temporary provider failure', response.data['assistant_response'])
+
+    def test_daily_quota_returns_safe_structured_response(self):
+        with patch(
+            'chatbot.views.generate_chat_reply',
+            side_effect=DailyLimitReachedError,
+        ):
+            response = self.client.post(
+                '/api/chat/', {'message': 'engine se knocking aa rahi hai'}, format='json'
+            )
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.data, {'error': DAILY_LIMIT_ERROR, 'message': DAILY_LIMIT_MESSAGE})
+        self.assertNotIn('test-key', response.content.decode())
+        self.assertNotIn('RESOURCE_EXHAUSTED', response.content.decode())
 
     def test_gemini_failure_gives_booking_guidance(self):
         with patch(
