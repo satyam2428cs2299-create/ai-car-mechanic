@@ -1,5 +1,7 @@
 import base64
 import json
+import os
+import urllib.error
 from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -7,7 +9,75 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from .models import Conversation, Diagnosis, Media, Message
-from .services.gemini import _fallback_diagnosis
+from .services.gemini import _fallback_diagnosis, _generate_content, _generate_content_rest
+
+
+class ProviderError(Exception):
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+class GeminiRetryTests(TestCase):
+    parts = [{"text": "Diagnose this engine symptom."}]
+
+    def test_successful_sdk_response(self):
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), patch(
+            'chatbot.services.gemini._generate_content_sdk', return_value='SDK response'
+        ) as sdk, patch('chatbot.services.gemini._generate_content_rest') as rest:
+            self.assertEqual(_generate_content(self.parts), 'SDK response')
+        sdk.assert_called_once_with(self.parts, None)
+        rest.assert_not_called()
+
+    def test_sdk_503_retries_then_succeeds(self):
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), patch(
+            'chatbot.services.gemini._generate_content_sdk',
+            side_effect=[ProviderError(503), 'SDK recovered'],
+        ) as sdk, patch('chatbot.services.gemini.time.sleep'):
+            self.assertEqual(_generate_content(self.parts), 'SDK recovered')
+        self.assertEqual(sdk.call_count, 2)
+
+    def test_sdk_failure_uses_rest_fallback(self):
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), patch(
+            'chatbot.services.gemini._generate_content_sdk',
+            side_effect=RuntimeError('SDK unavailable'),
+        ), patch(
+            'chatbot.services.gemini._generate_content_rest', return_value='REST response'
+        ) as rest:
+            self.assertEqual(_generate_content(self.parts), 'REST response')
+        rest.assert_called_once_with(self.parts, None)
+
+    def test_rest_503_retries_then_succeeds(self):
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), patch(
+            'chatbot.services.gemini._generate_content_rest_once',
+            side_effect=[urllib.error.HTTPError('url', 503, 'busy', {}, None), 'REST recovered'],
+        ) as rest, patch('chatbot.services.gemini.time.sleep'):
+            self.assertEqual(_generate_content_rest(self.parts), 'REST recovered')
+        self.assertEqual(rest.call_count, 2)
+
+    def test_rest_401_and_403_do_not_retry(self):
+        for status_code in (401, 403):
+            with self.subTest(status_code=status_code):
+                error = urllib.error.HTTPError('url', status_code, 'permanent failure', {}, None)
+                with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), patch(
+                    'chatbot.services.gemini._generate_content_rest_once', side_effect=error
+                ) as rest, patch('chatbot.services.gemini.time.sleep') as sleep:
+                    with self.assertRaises(urllib.error.HTTPError):
+                        _generate_content_rest(self.parts)
+                rest.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_final_fallback_only_after_all_attempts_fail(self):
+        sdk_error = ProviderError(503)
+        rest_error = urllib.error.HTTPError('url', 504, 'busy', {}, None)
+        with patch.dict(os.environ, {'GEMINI_API_KEY': 'test-key'}), patch(
+            'chatbot.services.gemini._generate_content_sdk', side_effect=sdk_error
+        ) as sdk, patch(
+            'chatbot.services.gemini._generate_content_rest_once', side_effect=rest_error
+        ) as rest, patch('chatbot.services.gemini.time.sleep'):
+            with self.assertRaises(urllib.error.HTTPError):
+                _generate_content(self.parts)
+        self.assertEqual(sdk.call_count, 4)
+        self.assertEqual(rest.call_count, 4)
 
 
 class ChatbotApiTests(TestCase):
@@ -101,8 +171,19 @@ class ChatbotApiTests(TestCase):
                 '/api/chat/', {'message': 'engine se knocking aa rahi hai'}, format='json'
             )
         self.assertEqual(response.status_code, 200)
-        self.assertIn('unable to reach', response.data['assistant_response'].lower())
+        self.assertIn('share your vehicle year', response.data['assistant_response'].lower())
         self.assertNotIn('temporary provider failure', response.data['assistant_response'])
+
+    def test_gemini_failure_gives_booking_guidance(self):
+        with patch(
+            'chatbot.services.gemini._generate_content',
+            side_effect=RuntimeError('temporary provider failure'),
+        ):
+            response = self.client.post(
+                '/api/chat/', {'message': 'Should I book a mechanic?'}, format='json'
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('booking a mechanic is sensible', response.data['assistant_response'].lower())
 
     def test_diagnosis_preserves_existing_response_shape(self):
         conversation = Conversation.objects.create()

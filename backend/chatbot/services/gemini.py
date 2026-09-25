@@ -1,9 +1,11 @@
 import json
 import logging
 import os
+import random
 import re
 import base64
 import ssl
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Iterable
@@ -17,6 +19,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "gemini-3.6-flash"
 MAX_HISTORY_MESSAGES = 8
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_RETRIES = 3
+RETRY_BASE_DELAY_SECONDS = 0.5
 AUTOMOTIVE_TERMS = (
     "car", "truck", "vehicle", "engine", "brake", "brakes", "tire", "tyre",
     "wheel", "oil", "coolant", "radiator", "battery", "alternator", "starter",
@@ -71,10 +75,45 @@ def deterministic_reply(text: str) -> str | None:
     return None
 
 
-def _fallback_chat_reply(text: str) -> str:
+def _fallback_chat_reply(text: str, messages: Iterable[Message] = ()) -> str:
+    recent_user_messages = [
+        message.content.strip()
+        for message in list(messages)[-MAX_HISTORY_MESSAGES:]
+        if message.role == Message.ROLE_USER and message.content.strip()
+    ]
+    context = " ".join(recent_user_messages).lower()
+    normalized = text.lower().strip()
+    combined = f"{context} {normalized}"
+    urgent_terms = (
+        "brake", "steering", "fuel leak", "smoke", "fire", "overheat",
+        "wheel came off", "tyre came off", "tire came off", "not stopping",
+    )
+
+    if any(term in combined for term in urgent_terms):
+        return (
+            "Because you mentioned a potentially safety-critical symptom, stop in a safe place, "
+            "switch the vehicle off, and do not drive it until a qualified mechanic inspects it. "
+            "Arrange towing if it cannot be safely moved."
+        )
+    if "book" in normalized and "mechanic" in normalized:
+        return (
+            "Booking a mechanic is sensible if the symptom is recurring, worsening, or affecting "
+            "starting, braking, steering, overheating, or warning lights. If the car is safe to "
+            "drive, share the symptom, warning light, and when it occurs so I can help you decide "
+            "how urgent the inspection is."
+        )
+    if any(phrase in normalized for phrase in ("what should i do", "what do i do", "next step", "now")):
+        return (
+            "Park safely and note exactly what you observed: the symptom, warning lights, sound or "
+            "smell, and whether the car starts and drives normally. Do not keep driving if braking, "
+            "steering, smoke, fuel leaks, or severe overheating are involved. Share those details "
+            "and your vehicle year, make, and model for the next step."
+        )
     return (
-        "I’m unable to reach the AI mechanic right now. I understood your message as: "
-        f"‘{text}’ Please avoid unsafe driving and try again shortly."
+        "I can help narrow this down. Please share your vehicle year, make, and model, what you "
+        "noticed, when it happens, and any dashboard warning light. If the symptom affects braking "
+        "or steering, or there is smoke, a fuel leak, or severe overheating, stop driving and arrange "
+        "a professional inspection."
     )
 
 
@@ -101,7 +140,56 @@ def _image_parts(media: Iterable[Media]) -> list[dict[str, Any]]:
     return parts
 
 
-def _generate_content_rest(parts: list[dict[str, Any]], response_mime_type: str | None = None) -> str:
+def _status_code(exc: BaseException) -> int | None:
+    for source in (exc, getattr(exc, "response", None)):
+        if source is None:
+            continue
+        for attribute in ("status_code", "status", "code"):
+            value = getattr(source, attribute, None)
+            if isinstance(value, int):
+                return value
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, int) else None
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    status_code = _status_code(exc)
+    if status_code is not None:
+        return status_code in {429, 500, 502, 503, 504}
+
+    if isinstance(exc, (TimeoutError, ConnectionError, urllib.error.URLError)):
+        return True
+
+    error_name = type(exc).__name__.lower()
+    error_text = str(exc).lower()
+    return any(
+        marker in error_name or marker in error_text
+        for marker in ("timeout", "timed out", "connection reset", "temporarily unavailable")
+    )
+
+
+def _with_retries(operation, provider: str) -> str:
+    for retry_number in range(MAX_RETRIES + 1):
+        try:
+            return operation()
+        except Exception as exc:
+            if not _is_transient_error(exc) or retry_number == MAX_RETRIES:
+                raise
+            delay = RETRY_BASE_DELAY_SECONDS * (2 ** retry_number)
+            delay += random.uniform(0, RETRY_BASE_DELAY_SECONDS)
+            logger.warning(
+                "Transient Gemini %s failure; retrying in %.2f seconds: %s",
+                provider,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+    raise RuntimeError("Gemini retry loop ended unexpectedly")
+
+
+def _generate_content_rest_once(
+    parts: list[dict[str, Any]], response_mime_type: str | None = None
+) -> str:
     key = _api_key()
     if not key:
         raise RuntimeError("GEMINI_API_KEY is not configured")
@@ -125,17 +213,54 @@ def _generate_content_rest(parts: list[dict[str, Any]], response_mime_type: str 
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(request, timeout=25, context=ssl_context) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
-        raise RuntimeError("Gemini request failed") from exc
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(request, timeout=25, context=ssl_context) as response:
+        data = json.loads(response.read().decode("utf-8"))
 
     try:
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError("Gemini returned an empty response") from exc
+
+
+def _generate_content_rest(parts: list[dict[str, Any]], response_mime_type: str | None = None) -> str:
+    return _with_retries(
+        lambda: _generate_content_rest_once(parts, response_mime_type),
+        "REST",
+    )
+
+
+def _generate_content_sdk(parts: list[dict[str, Any]], response_mime_type: str | None = None) -> str:
+    key = _api_key()
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=key)
+    sdk_parts = []
+    for part in parts:
+        if "text" in part:
+            sdk_parts.append(types.Part.from_text(text=part["text"]))
+        elif "inline_data" in part:
+            inline_data = part["inline_data"]
+            sdk_parts.append(types.Part.from_bytes(
+                data=base64.b64decode(inline_data["data"]),
+                mime_type=inline_data["mime_type"],
+            ))
+    config = None
+    if response_mime_type:
+        config = types.GenerateContentConfig(
+            temperature=0.2,
+            response_mime_type=response_mime_type,
+        )
+    response = client.models.generate_content(
+        model=_model_name(),
+        contents=[types.Content(role="user", parts=sdk_parts)],
+        config=config,
+    )
+    text = getattr(response, "text", None)
+    if not text:
+        raise RuntimeError("Gemini returned an empty response")
+    return text.strip()
 
 
 def _generate_content(parts: list[dict[str, Any]], response_mime_type: str | None = None) -> str:
@@ -145,35 +270,10 @@ def _generate_content(parts: list[dict[str, Any]], response_mime_type: str | Non
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
     try:
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=key)
-        sdk_parts = []
-        for part in parts:
-            if "text" in part:
-                sdk_parts.append(types.Part.from_text(text=part["text"]))
-            elif "inline_data" in part:
-                inline_data = part["inline_data"]
-                sdk_parts.append(types.Part.from_bytes(
-                    data=base64.b64decode(inline_data["data"]),
-                    mime_type=inline_data["mime_type"],
-                ))
-        config = None
-        if response_mime_type:
-            config = types.GenerateContentConfig(
-                temperature=0.2,
-                response_mime_type=response_mime_type,
-            )
-        response = client.models.generate_content(
-            model=_model_name(),
-            contents=[types.Content(role="user", parts=sdk_parts)],
-            config=config,
+        return _with_retries(
+            lambda: _generate_content_sdk(parts, response_mime_type),
+            "SDK",
         )
-        text = getattr(response, "text", None)
-        if not text:
-            raise RuntimeError("Gemini returned an empty response")
-        return text.strip()
     except Exception as exc:
         logger.warning("Gemini SDK request failed; using official REST fallback: %s", exc)
         return _generate_content_rest(parts, response_mime_type)
@@ -223,7 +323,7 @@ Uploaded media filenames: {media_names}
         return f"{unsupported_response}\n\n{response}" if unsupported_media else response
     except Exception:
         logger.exception("Gemini chat generation failed")
-        return _fallback_chat_reply(current_text)
+        return _fallback_chat_reply(current_text, history)
 
 
 def _fallback_diagnosis(messages: Iterable[Message]) -> dict[str, str]:
